@@ -1,5 +1,5 @@
 // ======================================================================================
-// Copyright 2017 State Key Laboratory of Remote Sensing Science, 
+// Copyright 2017 State Key Laboratory of Remote Sensing Science,
 // Institute of Remote Sensing Science and Engineering, Beijing Normal University
 
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +23,7 @@
 #include "Rasterization.h"
 #include "c2cdist.h"
 #include <fstream>
+#include <chrono>
 
 
 CSF::CSF(int index) {
@@ -37,13 +38,13 @@ CSF::CSF(int index) {
 }
 
 CSF::CSF() {
-	params.bSloopSmooth = true;
-	params.time_step = 0.65;
-	params.class_threshold = 0.5;
-	params.cloth_resolution = 1;
-	params.rigidness = 3;
-	params.interations = 500;
-	this->index = 0;
+    params.bSloopSmooth = true;
+    params.time_step = 0.65;
+    params.class_threshold = 0.5;
+    params.cloth_resolution = 1;
+    params.rigidness = 3;
+    params.interations = 500;
+    this->index = 0;
 }
 
 CSF::~CSF()
@@ -66,7 +67,7 @@ void CSF::setPointCloud(std::vector<csf::Point> points) {
 }
 
 void CSF::setPointCloud(double *points, int rows, int cols) {
-	point_cloud.resize(rows);
+    point_cloud.resize(rows);
     #define A(i, j) points[i * cols + j]
     for (int i = 0; i < rows; i++) {
         point_cloud[i] = {A(i, 0), -A(i, 2) , A(i, 1)};
@@ -76,8 +77,8 @@ void CSF::setPointCloud(double *points, int rows, int cols) {
 
 
 void CSF::setPointCloud(double *points, int rows) {
-	#define Mat(i, j) points[i + j * rows]
-	point_cloud.resize(rows);
+    #define Mat(i, j) points[i + j * rows]
+    point_cloud.resize(rows);
     for (int i = 0; i < rows; i++) {
         point_cloud[i] = {Mat(i, 0), -Mat(i, 2) , Mat(i, 1)};
     }
@@ -134,6 +135,8 @@ Cloth CSF::do_cloth() {
     std::cout << "[" << this->index << "]  - width: " << width_num << " "
          << "height: " << height_num << std::endl;
 
+    const auto clothStart = std::chrono::steady_clock::now();
+
     Cloth cloth(
         origin_pos,
         width_num,
@@ -146,26 +149,50 @@ Cloth CSF::do_cloth() {
         params.time_step
     );
 
+    const double clothSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - clothStart).count();
+    std::cout << "[" << this->index << "] timing cloth_creation_s=" << clothSeconds << std::endl;
+
     std::cout << "[" << this->index << "] Rasterizing..." << std::endl;
+    const auto rasterStart = std::chrono::steady_clock::now();
+
     Rasterization::RasterTerrian(cloth, point_cloud, cloth.getHeightvals());
+
+    const double rasterSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - rasterStart).count();
+    std::cout << "[" << this->index << "] timing rasterization_s=" << rasterSeconds << std::endl;
 
     double time_step2 = params.time_step * params.time_step;
     double gravity    = 0.2;
 
     std::cout << "[" << this->index << "] Simulating..." << std::endl;
+
+    int executedIterations = 0;
+    double lastMaxDiff = 0.0;
+    bool stoppedByConvergence = false;
+    const auto simulationStart = std::chrono::steady_clock::now();
+
     cloth.addForce(Vec3(0, -gravity, 0) * time_step2);
 
     // boost::progress_display pd(params.interations);
     for (int i = 0; i < params.interations; i++) {
         double maxDiff = cloth.timeStep();
         cloth.terrCollision();
-		//params.class_threshold / 100
+
+        executedIterations++;
+        lastMaxDiff = maxDiff;
+
+        //params.class_threshold / 100
         if ((maxDiff != 0) && (maxDiff < 0.005)) {
             // early stop
+            stoppedByConvergence = true;
             break;
         }
         // pd++;
     }
+
+    const double simulationSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - simulationStart).count();
+    std::cout << "[" << this->index << "] timing simulation_s=" << simulationSeconds
+              << " iterations=" << executedIterations << " max_iterations=" << params.interations
+              << " last_max_diff=" << lastMaxDiff << " stop=" << (stoppedByConvergence ? "convergence" : "iteration_limit") << std::endl;
 
     if (params.bSloopSmooth) {
         std::cout << "[" << this->index << "]  - post handle..." << std::endl;
@@ -186,8 +213,14 @@ void CSF::do_filtering(std::vector<int>& groundIndexes,
     auto cloth = do_cloth();
     if (exportCloth)
         cloth.saveToFile();
+
     c2cdist c2c(params.class_threshold);
+    const auto classificationStart = std::chrono::steady_clock::now();
+
     c2c.calCloud2CloudDist(cloth, point_cloud, groundIndexes, offGroundIndexes);
+
+    const double classificationSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - classificationStart).count();
+    std::cout << "[" << this->index << "] timing classification_s=" << classificationSeconds << std::endl;
 }
 
 
@@ -203,8 +236,8 @@ void CSF::savePoints(std::vector<int> grp, std::string path) {
 
     for (std::size_t i = 0; i < grp.size(); i++) {
         f1 << std::fixed << std::setprecision(8)
-           << point_cloud[grp[i]].x  << "	"
-           << point_cloud[grp[i]].z  << "	"
+           << point_cloud[grp[i]].x  << "   "
+           << point_cloud[grp[i]].z  << "   "
            << -point_cloud[grp[i]].y << std::endl;
     }
 
