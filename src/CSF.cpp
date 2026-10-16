@@ -24,6 +24,17 @@
 #include "c2cdist.h"
 #include <fstream>
 #include <chrono>
+#include <mutex>
+#include <sys/stat.h>
+#include <cstdlib>
+#include <ctime>
+
+static std::mutex g_csfCsvMutex;
+
+static bool csfFileExistsAndNotEmpty(const std::string& path) {
+    struct stat buffer;
+    return (stat(path.c_str(), &buffer) == 0 && buffer.st_size > 0);
+}
 
 
 CSF::CSF(int index) {
@@ -102,6 +113,7 @@ void CSF::setPointCloud(csf::PointCloud& pc) {
 
 void CSF::readPointsFromFile(std::string filename) {
     this->point_cloud.resize(0);
+    this->point_cloud_name = filename;
     read_xyz(filename, this->point_cloud);
 }
 
@@ -194,6 +206,17 @@ Cloth CSF::do_cloth() {
               << " iterations=" << executedIterations << " max_iterations=" << params.interations
               << " last_max_diff=" << lastMaxDiff << " stop=" << (stoppedByConvergence ? "convergence" : "iteration_limit") << std::endl;
 
+    lastTiming.cloth_width = width_num;
+    lastTiming.cloth_height = height_num;
+    lastTiming.num_particles = width_num * height_num;
+    lastTiming.cloth_creation_s = clothSeconds;
+    lastTiming.rasterization_s = rasterSeconds;
+    lastTiming.simulation_s = simulationSeconds;
+    lastTiming.executed_iterations = executedIterations;
+    lastTiming.max_iterations = params.interations;
+    lastTiming.last_max_diff = lastMaxDiff;
+    lastTiming.stopped_by_convergence = stoppedByConvergence;
+
     if (params.bSloopSmooth) {
         std::cout << "[" << this->index << "]  - post handle..." << std::endl;
         cloth.movableFilter();
@@ -210,6 +233,7 @@ std::vector<double> CSF::do_cloth_export() {
 void CSF::do_filtering(std::vector<int>& groundIndexes,
                       std::vector<int>& offGroundIndexes,
                       bool exportCloth) {
+    const auto filteringStart = std::chrono::steady_clock::now();
     auto cloth = do_cloth();
     if (exportCloth)
         cloth.saveToFile();
@@ -221,6 +245,89 @@ void CSF::do_filtering(std::vector<int>& groundIndexes,
 
     const double classificationSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - classificationStart).count();
     std::cout << "[" << this->index << "] timing classification_s=" << classificationSeconds << std::endl;
+
+    lastTiming.classification_s = classificationSeconds;
+    lastTiming.total_filtering_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - filteringStart).count();
+
+    const char* logEnv = std::getenv("CSF_LOG_FILE");
+    if (!logEnv) {
+        logEnv = std::getenv("CSF_BENCHMARK_CSV");
+    }
+    if (logEnv && logEnv[0] != '\0') {
+        std::string cloudName = point_cloud_name;
+        if (cloudName.empty()) {
+            const char* nameEnv = std::getenv("CSF_CLOUD_NAME");
+            if (nameEnv && nameEnv[0] != '\0') {
+                cloudName = nameEnv;
+            } else {
+                cloudName = "unnamed_cloud";
+            }
+        }
+        logRunToCsv(logEnv, cloudName, groundIndexes.size(), offGroundIndexes.size());
+    }
+}
+
+void CSF::logRunToCsv(const std::string& csvPath,
+                     const std::string& cloudName,
+                     size_t nGround,
+                     size_t nNonGround) {
+    if (csvPath.empty()) return;
+
+    std::lock_guard<std::mutex> lock(g_csfCsvMutex);
+    bool fileExists = csfFileExistsAndNotEmpty(csvPath);
+
+    std::ofstream csv(csvPath.c_str(), std::ios::app);
+    if (!csv.is_open()) return;
+
+    if (!fileExists) {
+        csv << "timestamp,cloud_name,n_points,ground_count,non_ground_count,ground_pct,non_ground_pct,"
+            << "cloth_resolution,rigidness,time_step,class_threshold,slope_smooth,"
+            << "cloth_width,cloth_height,num_particles,max_iterations,executed_iterations,"
+            << "stop_reason,last_max_diff,cloth_creation_s,rasterization_s,simulation_s,"
+            << "classification_s,total_s\n";
+    }
+
+    size_t totalPoints = point_cloud.size();
+    double groundPct = (totalPoints > 0) ? (nGround * 100.0 / totalPoints) : 0.0;
+    double nonGroundPct = (totalPoints > 0) ? (nNonGround * 100.0 / totalPoints) : 0.0;
+
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    std::tm now_tm;
+#if defined(_WIN32)
+    gmtime_s(&now_tm, &now_c);
+#else
+    gmtime_r(&now_c, &now_tm);
+#endif
+    char timeBuf[32];
+    std::strftime(timeBuf, sizeof(timeBuf), "%Y-%m-%d %H:%M:%S", &now_tm);
+
+    csv << timeBuf << ","
+        << cloudName << ","
+        << totalPoints << ","
+        << nGround << ","
+        << nNonGround << ","
+        << std::fixed << std::setprecision(4)
+        << groundPct << ","
+        << nonGroundPct << ","
+        << std::setprecision(2) << params.cloth_resolution << ","
+        << params.rigidness << ","
+        << std::setprecision(4) << params.time_step << ","
+        << params.class_threshold << ","
+        << (params.bSloopSmooth ? "true" : "false") << ","
+        << lastTiming.cloth_width << ","
+        << lastTiming.cloth_height << ","
+        << lastTiming.num_particles << ","
+        << params.interations << ","
+        << lastTiming.executed_iterations << ","
+        << (lastTiming.stopped_by_convergence ? "convergence" : "iteration_limit") << ","
+        << lastTiming.last_max_diff << ","
+        << lastTiming.cloth_creation_s << ","
+        << lastTiming.rasterization_s << ","
+        << lastTiming.simulation_s << ","
+        << lastTiming.classification_s << ","
+        << lastTiming.total_filtering_s << "\n";
+    csv.flush();
 }
 
 

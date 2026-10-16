@@ -1,4 +1,4 @@
-﻿// ======================================================================================
+// ======================================================================================
 // Copyright 2017 State Key Laboratory of Remote Sensing Science, 
 // Institute of Remote Sensing Science and Engineering, Beijing Normal University
 
@@ -49,6 +49,21 @@ struct Params {
     double cloth_resolution;
     int rigidness;
     int interations;
+};
+
+struct TimingMetrics {
+    double cloth_creation_s = 0.0;
+    double rasterization_s = 0.0;
+    double simulation_s = 0.0;
+    double classification_s = 0.0;
+    double total_filtering_s = 0.0;
+    int executed_iterations = 0;
+    int max_iterations = 0;
+    double last_max_diff = 0.0;
+    bool stopped_by_convergence = false;
+    int cloth_width = 0;
+    int cloth_height = 0;
+    int num_particles = 0;
 };
 
 #ifdef _CSF_DLL_EXPORT_
@@ -111,6 +126,20 @@ public:
                       bool exportCloth=true);
     
 
+    // set point cloud name for automatic benchmark logging
+    inline void setPointCloudName(const std::string& name) {
+        point_cloud_name = name;
+    }
+
+    inline const std::string& getPointCloudName() const {
+        return point_cloud_name;
+    }
+
+    void logRunToCsv(const std::string& csvPath,
+                     const std::string& cloudName,
+                     size_t nGround,
+                     size_t nNonGround);
+
     std::vector<double> do_cloth_export();
 
 private:
@@ -126,7 +155,10 @@ private:
 
 public:
 
+    std::string point_cloud_name;
     Params params;
+    TimingMetrics lastTiming;
+    inline const TimingMetrics& getLastTiming() const { return lastTiming; }
     int index;
 };
 
